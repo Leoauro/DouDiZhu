@@ -1,8 +1,8 @@
-
 import numpy as np
 from torch.utils.data import Dataset
 import torch
 from tokenizer.tokenizer import CustomTokenizer
+import pandas as pd
 
 
 class PretrainDataset(Dataset):
@@ -30,26 +30,15 @@ class PretrainDataset(Dataset):
 
 
 class SFTDataset(Dataset):
-    def __init__(self, df, tokenizer, max_length=1024, prompt_max_len=512, answer_max_len=256):
+    def __init__(self, df, max_length=1024):
         super().__init__()
         self.df = df
         self.max_length = max_length
-        self.prompt_max_len = prompt_max_len
-        self.answer_max_len = answer_max_len
         #
-        self.tokenizer = tokenizer
-        self.padding = 0
-        self.bos_id = self.tokenizer('<s>assistant').data['input_ids']
+        self.tokenizer = CustomTokenizer()
 
     def __len__(self):
         return self.df.shape[0]
-
-    def find_sublist_index(self, main_list, sub_list) -> int:
-        last_index = -1
-        for i in range(len(main_list) - len(sub_list) + 1):
-            if main_list[i:i + len(sub_list)] == sub_list:
-                last_index = i
-        return last_index
 
     def safe_eval(self, s):
         try:
@@ -59,7 +48,6 @@ class SFTDataset(Dataset):
         return res
 
     def __getitem__(self, index: int):
-        #
         sample = self.df.iloc[index]
         history = self.safe_eval(sample['history'])
         q = str(sample['q'])
@@ -80,21 +68,17 @@ class SFTDataset(Dataset):
             {"role": "user", "content": q},
             {"role": "assistant", "content": a},
         ]
-        new_prompt = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-        input_id = self.tokenizer(new_prompt).data['input_ids'][:self.max_length]
-
-        # 实际长度
-        question_length = self.find_sublist_index(input_id, self.bos_id) + len(self.bos_id)
-        # 没满最大长度的剩余部分
+        question_ids, answer_ids = self.tokenizer.apply_train_template(messages, False)
+        if len(question_ids + answer_ids) > self.max_length:
+            print("存在数据超过最长长度")
+            question_ids, answer_ids = self.def_message()
+        input_id = (question_ids + answer_ids)[:self.max_length]
         padding_len = self.max_length - len(input_id)
-        input_id = input_id + [self.padding] * padding_len
-        mask_len = len(input_id) - question_length - padding_len
+        input_id = input_id + self.tokenizer.tokenize("[PAD]") * padding_len
+
+        mask_len = len(input_id) - len(question_ids) - padding_len
         # 0表示不计算损失
-        loss_mask = [0] * question_length + [1] * (mask_len) + [0] * padding_len
+        loss_mask = [0] * len(question_ids) + [1] * (mask_len) + [0] * padding_len
 
         input_id = np.array(input_id)
         X = np.array(input_id[:-1]).astype(np.int64)
@@ -104,9 +88,19 @@ class SFTDataset(Dataset):
         X_tensor = torch.from_numpy(X)
         Y_tensor = torch.from_numpy(Y)
         loss_mask_tensor = torch.from_numpy(loss_mask)
-
         return X_tensor, Y_tensor, loss_mask_tensor
+
+    def def_message(self):
+        messages = [
+            {"role": "user", "content": "你是谁？"},
+            {"role": "assistant", "content": "我是由谢正才研发的智能机器人，你需要什么帮助吗？"},
+        ]
+        question_ids, answer_ids = self.tokenizer.apply_train_template(messages, False)
+        return question_ids, answer_ids
 
 
 if __name__ == "__main__":
-    pass
+    df = pd.read_csv('./data/sft_data_single.csv')
+    df = df.sample(frac=1.0)
+    dataset = SFTDataset(df)
+    print(dataset[0])

@@ -1,5 +1,5 @@
 {
-    "train_batch_size": 32,
+    "train_batch_size": 30,
     "gradient_accumulation_steps": 1,
     "zero_optimization": {
         "stage": 2,
@@ -20,11 +20,12 @@
         }
     },
     "scheduler": {
-        "type": "WarmupLR",
+        "type": "WarmupDecayLR",
         "params": {
-            "warmup_min_lr": 0.0003,
+            "warmup_min_lr": 0.000003,
             "warmup_max_lr": 0.001,
-            "warmup_num_steps": 10
+            "warmup_num_steps": 10,
+            "total_num_steps": 411335
         }
     },
     "fp16": {

@@ -1,32 +1,26 @@
-import os
-
 import json
-import os
-
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader, DistributedSampler
-
+from model.model import DouDiZhu
 from model.model_config import AttentionConfig
 
-from dataset import PretrainDataset
 from config import Config
-from model.model import DouDiZhu
-from tokenizer.tokenizer import CustomTokenizer
-from tqdm import tqdm
+from dataset import SFTDataset
 import deepspeed
-import torch.distributed as dist
+
+from tqdm import tqdm
 
 
 def train_epoch(epoch, model, train_loader, optimizer, lr_scheduler):
     model.train()
     print("epoch:{}".format(epoch))
     with tqdm(train_loader) as t:
-        for step, (x, labels) in enumerate(t):
+        for step, (x, labels, mask) in enumerate(t):
             x = x.to(model.device)
             labels = labels.to(model.device)
             logits = model(x)
-            mask = (labels != pad_id)
+            mask = (mask == 1)
             logits_flat = logits.view(-1, logits.size(-1))
             labels_flat = labels.view(-1)
             mask = mask.view(-1)
@@ -38,47 +32,29 @@ def train_epoch(epoch, model, train_loader, optimizer, lr_scheduler):
                 lr_scheduler.step()
             t.set_postfix(loss=f"{loss.item():.6f}", lr=f"{optimizer.param_groups[0]['lr']:.10f}", epoch=epoch + 1)
             if (step + 1) % train_cfg.save_interval == 0:
-                    model.save_checkpoint(
-                        save_dir = "./checkpoints",
-                        tag=f"epoch{epoch}",
-                        client_state={
-                              "epoch": epoch,  # 保存当前 epoch
-                              "step": step,
-                              "lr_scheduler": lr_scheduler.state_dict(),  # 保存学习率调度器状态
-                            }
-                        )
-
-                    #save_checkpoint(epoch, model, optimizer, lr_scheduler)
-
-
-def save_checkpoint(epoch, model, optimizer, lr_scheduler):
-    os.makedirs("./checkpoints", exist_ok=True)
-    model.save_checkpoint(
-        save_dir="./checkpoints",
-        tag=f"epoch{epoch}",
-        client_state={
-            'epoch': epoch,
-            'optimizer': optimizer.state_dict(),
-            'scheduler': lr_scheduler.state_dict() if lr_scheduler else None,
-            'config': train_cfg.__dict__
-        }
-    )
-
-
-def count_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+                model.save_checkpoint(
+                    save_dir="./checkpoints",
+                    tag=f"full_sft_epoch{epoch}",
+                    client_state={
+                        "epoch": epoch,  # 保存当前 epoch
+                        "step": step,
+                        "lr_scheduler": lr_scheduler.state_dict(),  # 保存学习率调度器状态
+                    }
+                )
 
 
 if __name__ == "__main__":
+
     deepspeed.init_distributed()
     lm_config = AttentionConfig()
     train_cfg = Config()
     torch.manual_seed(2056)
     model = DouDiZhu()
-    print(f'模型总参数量{count_parameters(model)}')
-    df = pd.read_csv("./data/pretrain_data.csv")
+
+    df = pd.read_csv('./data/sft_data_single.csv')
     df = df.sample(frac=1.0)
-    dataset = PretrainDataset(df, max_length=lm_config.max_seq_len)
+    dataset = SFTDataset(df)
+
     with open("deepspeed_config.json", "r") as f:
         ds_config = json.load(f)
     model_engine, optimizer, _, lr_scheduler = deepspeed.initialize(
@@ -87,9 +63,12 @@ if __name__ == "__main__":
         config=ds_config,
         training_data=dataset
     )
-    lr_scheduler.last_epoch = 0  # 设置初始 epoch
-    lr_scheduler.step()
-    model_engine.load_checkpoint("./checkpoints", "epoch0")
+    model_engine.load_checkpoint(
+        "./checkpoints",
+        tag="epoch5",
+        load_optimizer_states=False,
+        load_lr_scheduler_states=False
+    )
 
     sampler = DistributedSampler(dataset)
     train_loader = DataLoader(
@@ -100,7 +79,6 @@ if __name__ == "__main__":
         num_workers=train_cfg.num_workers
     )
     loss_fn = torch.nn.CrossEntropyLoss()
-    pad_id = CustomTokenizer().tokenize("[PAD]")[0]
-    for epoch in range(1,train_cfg.epochs):
+    for epoch in range(0, train_cfg.epochs):
         sampler.set_epoch(epoch)
         train_epoch(epoch, model_engine, train_loader, optimizer, lr_scheduler)

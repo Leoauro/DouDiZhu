@@ -24,6 +24,10 @@ def predict(ddz: DouDiZhu, prompt: str):
 
 if __name__ == "__main__":
     model = DouDiZhu().cuda()
-    checkpoint = torch.load("./checkpoints/epoch0_step9999.pt")
-    model.load_state_dict(checkpoint['model'])
-    print(predict(model, "[CLS]jkkj"))
+    checkpoint = torch.load("./checkpoints/mp_rank_00_model_states.pt")
+    model.load_state_dict(checkpoint['module'])
+    # checkpoint = torch.load("./checkpoints/mp_rank_00_model_states_epch2.pt")
+    # model.load_state_dict(checkpoint['module'])
+    # checkpoint = torch.load("./checkpoints/epoch0_step9999.pt")
+    # model.load_state_dict(checkpoint['model'])
+    print(predict(model, "[CLS]天空的颜色"))
